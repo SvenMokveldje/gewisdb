@@ -4,14 +4,24 @@ declare(strict_types=1);
 
 use Application\Model\Enums\AddressTypes;
 use Application\View\HelperTrait;
+use Checker\Model\TueData as TueDataModel;
+use Database\Model\ProspectiveMember as ProspectiveMemberModel;
 use Laminas\Form\Element\Checkbox;
 use Laminas\View\Renderer\PhpRenderer;
 
-/** @var PhpRenderer|HelperTrait $this */
+/**
+ * @var PhpRenderer|HelperTrait $this
+ * @var ProspectiveMemberModel $member
+ * @var bool $canDelete
+ * @var TueDataModel $tueData
+ * @var array<array-key, string[]> $tueStatus
+ */
 ?>
 <div class="row">
+    <div class="col-md-12">
+        <h1><?= $this->escapeHtml($member->getFullName()) ?></h1>
+    </div>
 <div class="col-md-6">
-    <h1><?= $this->escapeHtml($member->getFullName()) ?></h1>
     <table class="table table-bordered">
         <tr>
             <th></th>
@@ -95,114 +105,227 @@ use Laminas\View\Renderer\PhpRenderer;
             </td><?php endif; ?>
         </tr>
     </table>
-    <?php foreach ($tueStatus as $alert): ?>
-        <div class="alert alert-<?= $alert[0] ?>" role="alert">
-            <?= $alert[1] ?>
-        </div>
-    <?php endforeach; ?>
-
-    <?php
-    $form->prepare();
-
-    $form->setAttribute('action', $this->url('prospective-member/show/finalize', array('id' => $member->getLidnr())));
-    $form->setAttribute('method', 'post');
-
-    $form->setAttribute('role', 'form');
-    ?>
-    <?= $this->form()->openTag($form) ?>
-    <?php
-    $element = $form->get('type');
-    $element->setAttribute('placeholder', $element->getLabel());
-
-    //$element->setLabelAttributes(array('class' => 'radio-inline'));
-    ?>
-    <div class="form-group">
-        <label for="<?= $element->getName() ?>" class="control-label col-sm-4 label-required"><?= $element->getLabel() ?></label>
-        <br>
-        <div class="col-sm-12">
-            <?php foreach ($element->getValueOptions() as $option => $text): ?>
-                <div class="radio">
-                    <label>
-                        <input type="radio" name="<?= $element->getName() ?>" id="<?= $element->getName() ?>" value="<?= $option ?>" <?= $element->getValue() == $option ? 'checked' : '' ?>>
-                        <?= $text ?>
-                    </label>
-                </div>
-            <?php endforeach ?>
-            <?= $this->formElementErrors($element) ?>
+</div>
+    <div class="col-md-6">
+        <div class="row">
+            <div class="col-md-12">
+                <h3><?= $this->translate('Addresses') ?></h3>
+                <?php $addresses = array() ?>
+                <?php foreach ($member->getAddresses() as $address): ?>
+                    <?php $addresses[$address->getType()->value] = $address ?>
+                    <h4><?= $address->getType()->getName($this->plugin('translate')->getTranslator()) ?></h4>
+                    <table class="table table-bordered">
+                        <tr>
+                            <th><?= $this->translate('Postal Region') ?></th>
+                            <td><?= $address->getCountry()->value ?></td>
+                        </tr>
+                        <tr>
+                            <th><?= $this->translate('Street and House Number') ?></th>
+                            <td><?= $address->getStreet() ?> <?= $address->getNumber() ?></td>
+                        </tr>
+                        <tr>
+                            <th><?= $this->translate('City and Postal Code') ?></th>
+                            <td><?= $address->getCity() ?> <?= $address->getPostalCode() ?></td>
+                        </tr>
+                        <tr>
+                            <th><?= $this->translate('Phone Number') ?></th>
+                            <td><?= $address->getPhone() ?></td>
+                        </tr>
+                    </table>
+                <?php endforeach; ?>
+            </div>
+            <div class="col-md-12">
+                <h3><?= $this->translate('Mailing List Subscriptions') ?></h3>
+                <?php if (0 === $member->getLists()->count()): ?>
+                    <p>
+                        <?= $this->translate('No mailing list subscriptions.') ?>
+                    </p>
+                <?php else: ?>
+                    <ul>
+                        <?php foreach ($member->getLists() as $list): ?>
+                            <li><?= $list->getName() ?></li>
+                        <?php endforeach ?>
+                    </ul>
+                <?php endif; ?>
+            </div>
+            <div class="col-md-12">
+                <h3><?= $this->translate('Checkout Status') ?></h3>
+                <?php if (0 === $member->getCheckoutSessions()->count()): ?>
+                    <p>
+                        <?= $this->translate('No Checkout Sessions on record.') ?>
+                    </p>
+                <?php else: ?>
+                    <table class="table table-bordered">
+                        <thead>
+                            <tr>
+                                <th scope="col"><?= $this->translate('Created') ?></th>
+                                <th scope="col"><?= $this->translate('Status') ?></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php $translator = $this->plugin('translate')->getTranslator(); ?>
+                            <?php foreach ($member->getCheckoutSessions() as $checkoutSession): ?>
+                                <tr>
+                                    <td><?= $checkoutSession->getCreated()->format(DateTimeInterface::ATOM) ?></td>
+                                    <td><?= $checkoutSession->getState()->getName($translator) ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
+            </div>
         </div>
     </div>
+</div>
+<div class="row">
+    <div class="col-md-12">
+        <h2><?= $this->translate('Approval') ?></h2>
+    </div>
+    <div class="col-md-12">
+        <?php foreach ($tueStatus as $alert): ?>
+            <div class="alert alert-<?= $alert[0] ?>" role="alert">
+                <?= $alert[1] ?>
+            </div>
+        <?php endforeach; ?>
 
-    <?php
-    $element = $form->get('updatedata');
-    if ($tueData->isValid()) {
-        $element->setChecked(true);
-    } else {
-        $element->setChecked(false);
-        $element->setAttributes([
-            "disabled" => true,
-        ]);
-    }
-    ?>
-    <div class="form-group">
-        <div class="col-sm-12">
-            <div class="checkbox">
-                <label>
-                    <?= $this->formCheckbox($element) ?>
+        <?php if (isset($form)): ?>
+            <?php if (!$member->hasPaid()): ?>
+                <div class="panel-group">
+                    <div class="panel panel-default">
+                        <div class="panel-heading">
+                            <h4 class="panel-title">
+                                <a data-toggle="collapse" href="#not-paid-collapse">
+                                    <?= $this->translate('Click here for approval if membership fee paid with cash.') ?>
+                                </a>
+                            </h4>
+                        </div>
+                        <div id="not-paid-collapse" class="panel-collapse collapse">
+                            <div class="panel-body">
+            <?php endif; ?>
+            <?php
+            $form->prepare();
+
+            $form->setAttribute('action', $this->url('prospective-member/show/finalize', ['id' => $member->getLidnr()]));
+            $form->setAttribute('method', 'post');
+
+            $form->setAttribute('role', 'form');
+            ?>
+            <?= $this->form()->openTag($form) ?>
+            <?php
+            $element = $form->get('type');
+            $element->setAttribute('placeholder', $element->getLabel());
+            ?>
+            <div class="form-group">
+                <label for="<?= $element->getName() ?>" class="control-label col-sm-4 label-required">
                     <?= $element->getLabel() ?>
                 </label>
-                <?= $this->formElementErrors($element) ?>
+                <br>
+                <div class="col-sm-12">
+                    <?php foreach ($element->getValueOptions() as $option => $text): ?>
+                        <div class="radio">
+                            <label>
+                                <input type="radio" name="<?= $element->getName() ?>" id="<?= $element->getName() ?>" value="<?= $option ?>" <?= $element->getValue() == $option ? 'checked' : '' ?>>
+                                <?= $text ?>
+                            </label>
+                        </div>
+                    <?php endforeach ?>
+                    <?= $this->formElementErrors($element) ?>
+                </div>
             </div>
-            <?= $this->formElementErrors($element) ?>
-        </div>
-    </div>
 
-    <?php
-    $submit = $form->get('submit');
-    $submit->setLabel($this->translate('Approve Membership'));
-    $submit->setAttribute('class', 'btn btn-success');
-    ?>
-    <?= $this->formButton($submit) ?>
-    <a href="<?= $this->url('prospective-member/show/delete', array(
-        'id' => $member->getLidnr()
-    )) ?>" class="btn btn-danger"><?= $this->translate('Delete Prospective Member') ?></a>
-    <?= $this->form()->closeTag($form) ?>
-</div>
-<div class="col-md-6">
-<h3><?= $this->translate('Addresses') ?></h3>
-<?php $addresses = array() ?>
-<?php foreach ($member->getAddresses() as $address): ?>
-<?php $addresses[$address->getType()->value] = $address ?>
-<h4><?= $address->getType()->getName($this->plugin('translate')->getTranslator()) ?></h4>
-<table class="table table-bordered">
-    <tr>
-        <th><?= $this->translate('Postal Region') ?></th>
-        <td><?= $address->getCountry()->value ?></td>
-    </tr>
-    <tr>
-        <th><?= $this->translate('Street and House Number') ?></th>
-        <td><?= $address->getStreet() ?> <?= $address->getNumber() ?></td>
-    </tr>
-    <tr>
-        <th><?= $this->translate('City and Postal Code') ?></th>
-        <td><?= $address->getCity() ?> <?= $address->getPostalCode() ?></td>
-    </tr>
-    <tr>
-        <th><?= $this->translate('Phone Number') ?></th>
-        <td><?= $address->getPhone() ?></td>
-    </tr>
-</table>
-<?php endforeach ?>
-<h3><?= $this->translate('Mailing List Subscriptions') ?></h3>
-<ul>
-<?php foreach ($member->getLists() as $list): ?>
-    <li><?= $list->getName() ?></li>
-<?php endforeach ?>
-</ul>
-<h3><?= $this->translate('Signature SEPA Direct Debit') ?></h3>
-<?php if (null !== ($signature = $member->getSignature())): ?>
-    <img src="<?= $this->fileUrl($signature) ?>" height="150" width="300" />
-<?php else: ?>
-    <p><?= $this->translate('No signature or IBAN provided.') ?></p>
-<?php endif; ?>
-</div>
+            <?php
+            $element = $form->get('updatedata');
+            if ($tueData->isValid()) {
+                $element->setChecked(true);
+            } else {
+                $element->setChecked(false);
+                $element->setAttributes([
+                    'disabled' => true,
+                ]);
+            }
+            ?>
+            <div class="form-group">
+                <div class="col-sm-12">
+                    <div class="checkbox">
+                        <label>
+                            <?= $this->formCheckbox($element) ?>
+                            <?= $element->getLabel() ?>
+                        </label>
+                        <?= $this->formElementErrors($element) ?>
+                    </div>
+                    <?= $this->formElementErrors($element) ?>
+                </div>
+            </div>
+
+            <?php
+            $submit = $form->get('submit');
+            $submit->setLabel($this->translate('Approve Membership'));
+            $submit->setAttribute('class', 'btn btn-success');
+            ?>
+            <?= $this->formButton($submit) ?>
+            <?php if (!$canDelete): ?>
+                <?= $this->form()->closeTag() ?>
+            <?php endif; ?>
+            <?php if (!$member->hasPaid()): ?>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            <?php endif; ?>
+        <?php else: ?>
+            <p>
+                <?= $this->translate('This prospective member cannot be approved.') ?>
+            </p>
+        <?php endif; ?>
+        <?php if ($canDelete): ?>
+            <button type="button" class="btn btn-danger remove-modal">
+                <?= $this->translate('Delete Prospective Member') ?>
+            </button>
+            <?php if (isset($form)): ?>
+                <?= $this->form()->closeTag() ?>
+            <?php endif; ?>
+            <div id="prospective-removal" class="modal fade" tabindex="-1" role="dialog" aria-labelledby="prospective-removal-label" aria-hidden="true">
+                <div class="modal-dialog modal-sm">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <button type="button" class="close" data-dismiss="modal" aria-hidden="true">&times;</button>
+                            <h4 class="modal-title" id="prospective-removal-label">
+                                <?= $this->translate('Remove Prospective Member') ?>
+                            </h4>
+                        </div>
+                        <div class="modal-body">
+                            <?php if ($member->hasPaid()): ?>
+                                <?= sprintf(
+                                    // phpcs:ignore -- user-visible strings should not be split
+                                    $this->translate('Are you sure that you want to remove %s? Because they have already paid a refund will be requested. If this fails, the prospective member will NOT be removed.'),
+                                    '<span class="name">' . $this->escapeHtml($member->getFullName()) . '</span>',
+                                ) ?>
+                            <?php else: ?>
+                                <?= sprintf(
+                                    $this->translate('Are you sure that you want to remove %s?'),
+                                    '<span class="name">' . $this->escapeHtml($member->getFullName()) . '</span>',
+                                ) ?>
+                            <?php endif; ?>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-default" data-dismiss="modal">
+                                <?= $this->translate('No') ?>
+                            </button>
+                            <a href="<?= $this->url('prospective-member/show/delete', [
+                                'id' => $member->getLidnr()
+                            ]) ?>" class="btn btn-danger" id="remove-modal-yes">
+                                <?= $this->translate('Delete Prospective Member') ?>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <script>
+                $('button.remove-modal').click(function() {
+                    let modal = $('#prospective-removal');
+                    modal.modal();
+                });
+            </script>
+        <?php endif; ?>
+    </div>
 </div>

@@ -24,7 +24,6 @@ use function array_map;
 use function array_reduce;
 use function array_values;
 use function in_array;
-use function preg_replace;
 
 /**
  * Member model.
@@ -140,15 +139,6 @@ class Member
      */
     #[Column(type: 'integer')]
     protected int $paid = 0;
-
-    /**
-     * Iban number.
-     */
-    #[Column(
-        type: 'string',
-        nullable: true,
-    )]
-    protected ?string $iban = null;
 
     /**
      * If the member receives a 'supremum'.
@@ -502,30 +492,6 @@ class Member
     }
 
     /**
-     * Get the IBAN.
-     */
-    public function getIban(bool $print = false): ?string
-    {
-        if (null === $this->iban) {
-            return null;
-        }
-
-        if ($print) {
-            return preg_replace('/(\\w{4})/', '$1 ', $this->iban);
-        }
-
-        return $this->iban;
-    }
-
-    /**
-     * Set the IBAN.
-     */
-    public function setIban(?string $iban): void
-    {
-        $this->iban = $iban;
-    }
-
-    /**
      * Get if the member wants a supremum.
      */
     public function getSupremum(): ?string
@@ -670,6 +636,7 @@ class Member
      *         current: bool,
      *      }>,
      *      keyholder?: bool,
+     *      type?: string,
      * }
      */
     public function toArrayApi(array $include = []): array
@@ -706,6 +673,10 @@ class Member
 
         if (in_array('keyholder', $include)) {
             $result['keyholder'] = $this->isKeyholder();
+        }
+
+        if (in_array('type', $include)) {
+            $result['type'] = $this->getType()->value;
         }
 
         return $result;
