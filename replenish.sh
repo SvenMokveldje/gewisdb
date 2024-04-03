@@ -1,6 +1,6 @@
 #!/bin/sh
 export REPOSITORY="GEWIS/gewisdb"
-export BRANCH="master"
+export BRANCH="main"
 cd /tmp
 wget --no-cache "https://github.com/${REPOSITORY}/archive/refs/heads/${BRANCH}.zip"
 unzip "${BRANCH}.zip"
@@ -13,9 +13,9 @@ rm -R /tmp/gewisdb-${BRANCH}
 cd /code
 if [ "${APP_ENV}" == 'production' ]
 then
-    php composer.phar dump-autoload -o --no-dev
+    composer dump-autoload -o --no-dev
 else
-    php composer.phar dump-autoload -o
+    composer dump-autoload -o
 fi
 ./orm orm:generate-proxies
 /bin/sh -c "EM_ALIAS=orm_report ./orm orm:generate-proxies"

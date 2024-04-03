@@ -4,12 +4,18 @@ declare(strict_types=1);
 
 namespace Database\Mapper;
 
+use Database\Model\CheckoutSession as CheckoutSessionModel;
+use Database\Model\Enums\CheckoutSessionStates;
 use Database\Model\ProspectiveMember as ProspectiveMemberModel;
+use DateInterval;
+use DateTime;
 use Doctrine\ORM\EntityManager;
 use Doctrine\ORM\EntityRepository;
+use Doctrine\ORM\Query\Expr\Join;
 
 use function count;
 use function is_numeric;
+use function str_replace;
 use function strtolower;
 
 class ProspectiveMember
@@ -42,8 +48,10 @@ class ProspectiveMember
      *
      * @return array<array-key, ProspectiveMemberModel>
      */
-    public function search(string $query): array
-    {
+    public function search(
+        string $query,
+        string $type,
+    ): array {
         $qb = $this->em->createQueryBuilder();
 
         $qb->select('m')
@@ -51,7 +59,7 @@ class ProspectiveMember
             ->where("CONCAT(LOWER(m.firstName), ' ', LOWER(m.lastName)) LIKE :name")
             ->orWhere("CONCAT(LOWER(m.firstName), ' ', LOWER(m.middleName), ' ', LOWER(m.lastName)) LIKE :name")
             ->orWhere('m.email LIKE :name')
-            ->setMaxResults(32)
+            ->setMaxResults(128)
             ->orderBy('m.lidnr', 'DESC')
             ->setFirstResult(0);
 
@@ -62,6 +70,27 @@ class ProspectiveMember
             $qb->orWhere('m.lidnr = :nr');
             $qb->orWhere('m.tueUsername = :nr');
             $qb->setParameter(':nr', $query);
+        }
+
+        // Get Checkout Session status.
+        $qb->leftJoin(CheckoutSessionModel::class, 'cs', Join::WITH, 'cs.prospectiveMember = m.lidnr');
+        $qbc = $this->em->createQueryBuilder();
+        $qbc->select('MAX(css.id)')
+            ->from(CheckoutSessionModel::class, 'css')
+            ->where('css.prospectiveMember = m.lidnr');
+        $qb->andWhere($qb->expr()->eq('cs.id', '(' . $qbc->getDQL() . ')'));
+
+        if ('paid' === $type) {
+            $qb->andWhere('cs.state = :paid')
+                ->setParameter('paid', CheckoutSessionStates::Paid);
+        } elseif ('failed' === $type) {
+            $qb->andWhere('cs.state = :expired OR cs.state = :failed')
+                ->setParameter('expired', CheckoutSessionStates::Expired)
+                ->setParameter('failed', CheckoutSessionStates::Failed);
+        } else {
+            $qb->andWhere('cs.state = :created OR cs.state = :pending')
+                ->setParameter('created', CheckoutSessionStates::Created)
+                ->setParameter('pending', CheckoutSessionStates::Pending);
         }
 
         return $qb->getQuery()->getResult();
@@ -94,6 +123,56 @@ class ProspectiveMember
         $qb->setParameter(':lidnr', $lidnr);
 
         return $qb->getQuery()->getOneOrNullResult();
+    }
+
+    /**
+     * Find all prospective members whose last Checkout Session has fully expired ((1/24 + 30) + 1 day ago) or failed 31
+     * days ago.
+     *
+     * @return ProspectiveMemberModel[]
+     */
+    public function findWithFullyExpiredOrFailedCheckout(): array
+    {
+        // Get all prospective members and their checkout sessions
+        $qb = $this->getRepository()->createQueryBuilder('m');
+        $qb->leftJoin(CheckoutSessionModel::class, 'cs', Join::WITH, 'cs.prospectiveMember = m.lidnr');
+
+        // Subquery to get maximum checkout session for a member
+        $qbc = $this->em->createQueryBuilder();
+        $qbc->select('MAX(csm.id)')
+            ->from(CheckoutSessionModel::class, 'csm')
+            ->where('csm.prospectiveMember = m.lidnr');
+
+        // Subquery to get the original (expired) checkout session (the one that could be recovered)
+        $qbd = $this->em->createQueryBuilder();
+        $qbd->select('(CASE WHEN css.recoveredFrom IS NOT NULL THEN IDENTITY(css.recoveredFrom) ELSE css.id END)')
+            ->from(CheckoutSessionModel::class, 'css')
+            ->where('css.prospectiveMember = m.lidnr')
+            ->andWhere($qb->expr()->eq('css.id', '(' . str_replace('csm', 'csm2', $qbc->getDQL()) . ')'))
+            ->andWhere('css.state = :expired');
+
+        $qb->where($qb->expr()->orX(
+            // Get the last checkout session, if it has failed more than 31 days ago
+            $qb->expr()->andX(
+                $qb->expr()->eq('cs.id', '(' . $qbc->getDQL() . ')'),
+                $qb->expr()->eq('cs.state', ':failed'),
+                $qb->expr()->lt('cs.expiration', ':fullyFailed'),
+            ),
+            // OR get the original session if it has expired more than a day ago using that
+            // if x.state == Expired, the expiration date is the last date the checkout session can be recoverd
+            $qb->expr()->andX(
+                $qb->expr()->eq('cs.id', '(' . $qbd->getDQL() . ')'),
+                $qb->expr()->eq('cs.state', ':expired'),
+                $qb->expr()->lt('cs.expiration', ':fullyExpired'),
+            ),
+        ));
+
+        $qb->setParameter('expired', CheckoutSessionStates::Expired)
+            ->setParameter('failed', CheckoutSessionStates::Failed)
+            ->setParameter('fullyExpired', (new DateTime())->sub(new DateInterval('P1D')))
+            ->setParameter('fullyFailed', (new DateTime())->sub(new DateInterval('P31D')));
+
+        return $qb->getQuery()->getResult();
     }
 
     /**

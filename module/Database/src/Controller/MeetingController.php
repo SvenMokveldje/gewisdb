@@ -133,6 +133,7 @@ class MeetingController extends AbstractActionController
     ): array {
         $forms = [
             'budget' => $this->meetingService->getBudgetForm(),
+            'organ_regulation' => $this->meetingService->getRegulationForm(),
             'foundation' => $this->meetingService->getFoundationForm(),
             'abolish' => $this->meetingService->getAbolishForm(),
             'destroy' => $this->meetingService->getDestroyForm(),
@@ -164,6 +165,9 @@ class MeetingController extends AbstractActionController
         return match ($this->params()->fromRoute('form')) {
             'budget' => new ViewModel(
                 $this->meetingService->budgetDecision($this->getRequest()->getPost()->toArray()),
+            ),
+            'organ_regulation' => new ViewModel(
+                $this->meetingService->regulationDecision($this->getRequest()->getPost()->toArray()),
             ),
             'foundation' => new ViewModel(
                 $this->meetingService->foundationDecision($this->getRequest()->getPost()->toArray()),
@@ -248,11 +252,28 @@ class MeetingController extends AbstractActionController
     }
 
     /**
-     * Search action.
+     * Search action for meetings.
      *
      * Uses JSON to search for decisions.
      */
-    public function searchAction(): JsonModel
+    public function searchMeetingAction(): JsonModel
+    {
+        $query = $this->params()->fromQuery('q');
+        $res = $this->meetingService->meetingSearch($query);
+
+        $res = array_map(static function ($meeting) {
+            return $meeting->toArray();
+        }, $res);
+
+        return new JsonModel(['json' => $res]);
+    }
+
+    /**
+     * Search action for decisions.
+     *
+     * Uses JSON to search for decisions.
+     */
+    public function searchDecisionAction(): JsonModel
     {
         $query = $this->params()->fromQuery('q');
         $res = $this->meetingService->decisionSearch($query);

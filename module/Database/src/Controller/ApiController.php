@@ -11,6 +11,8 @@ use Laminas\View\Model\JsonModel;
 use User\Model\Enums\ApiPermissions;
 use User\Service\ApiAuthenticationService;
 
+use function array_diff;
+
 class ApiController extends AbstractActionController
 {
     public function __construct(
@@ -36,20 +38,28 @@ class ApiController extends AbstractActionController
     {
         $this->apiAuthService->assertCan(ApiPermissions::MembersR);
 
-        $members = $this->apiService->getMembers();
+        $additionalProperties = $this->additionalProperties();
+        if (!$this->getRequest()->getQuery('includeOrgans', false)) {
+            $additionalProperties = array_diff($additionalProperties, ['organs']);
+        }
+
+        $members = $this->apiService->getMembers($additionalProperties);
         $res = ['data' => $members];
 
         return new JsonModel($res);
     }
 
     /**
-     * Return members
+     * Return member
      */
     public function memberAction(): JsonModel|Response
     {
         $this->apiAuthService->assertCan(ApiPermissions::MembersR);
 
-        $member = $this->apiService->getMember((int) $this->params()->fromRoute('id'));
+        $member = $this->apiService->getMember(
+            (int) $this->params()->fromRoute('id'),
+            $this->additionalProperties(),
+        );
         if (null === $member) {
             return $this->noContent();
         }
@@ -68,16 +78,7 @@ class ApiController extends AbstractActionController
 
         $includeInactiveFraternity = (bool) $this->getRequest()->getQuery('includeInactive', false);
 
-        $additionalProperties = [];
-        if ($this->apiAuthService->currentUserCan(ApiPermissions::OrgansMembershipR)) {
-            $additionalProperties[] = 'organs';
-        }
-
-        if ($this->apiAuthService->currentUserCan(ApiPermissions::MembersPropertyKeyholder)) {
-            $additionalProperties[] = 'keyholder';
-        }
-
-        $members = $this->apiService->getActiveMembers($additionalProperties, $includeInactiveFraternity);
+        $members = $this->apiService->getActiveMembers($this->additionalProperties(), $includeInactiveFraternity);
         $res = ['data' => $members];
 
         return new JsonModel($res);
@@ -92,5 +93,46 @@ class ApiController extends AbstractActionController
         $response->setStatusCode(Response::STATUS_CODE_204);
 
         return $response;
+    }
+
+    /**
+     * @return array<array-key,string> $additionalProperties
+     */
+    private function additionalProperties(): array
+    {
+        $additionalProperties = [];
+        if ($this->apiAuthService->currentUserCan(ApiPermissions::OrgansMembershipR)) {
+            $additionalProperties[] = 'organs';
+        }
+
+        if ($this->apiAuthService->currentUserCan(ApiPermissions::MembersPropertyKeyholder)) {
+            $additionalProperties[] = 'keyholder';
+        }
+
+        if ($this->apiAuthService->currentUserCan(ApiPermissions::MembersPropertyType)) {
+            $additionalProperties[] = 'type';
+        }
+
+        if ($this->apiAuthService->currentUserCan(ApiPermissions::MembersPropertyEmail)) {
+            $additionalProperties[] = 'email';
+        }
+
+        if ($this->apiAuthService->currentUserCan(ApiPermissions::MembersPropertyBirthDate)) {
+            $additionalProperties[] = 'birthdate';
+        }
+
+        if ($this->apiAuthService->currentUserCan(ApiPermissions::MembersPropertyAge16)) {
+            $additionalProperties[] = 'is_16_plus';
+        }
+
+        if ($this->apiAuthService->currentUserCan(ApiPermissions::MembersPropertyAge18)) {
+            $additionalProperties[] = 'is_18_plus';
+        }
+
+        if ($this->apiAuthService->currentUserCan(ApiPermissions::MembersPropertyAge21)) {
+            $additionalProperties[] = 'is_21_plus';
+        }
+
+        return $additionalProperties;
     }
 }

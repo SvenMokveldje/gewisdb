@@ -66,7 +66,7 @@ replenish:
 		@docker cp ./data "$(shell docker compose ps -q web)":/code
 		@docker compose exec web chown -R www-data:www-data /code/data
 		@docker compose exec web rm -rf data/cache/module-config-cache.application.config.cache.php
-		@docker compose exec web php composer.phar dump-autoload --dev
+		@docker compose exec web composer dump-autoload --dev
 		@docker compose exec web ./orm orm:generate-proxies
 		@docker compose exec web /bin/sh -c "EM_ALIAS=orm_report ./orm orm:generate-proxies"
 
@@ -100,7 +100,7 @@ phpstan:
 
 phpstanpr:
 		@git fetch --all
-		@git update-ref refs/heads/temp-phpstanpr refs/remotes/origin/master
+		@git update-ref refs/heads/temp-phpstanpr refs/remotes/origin/main
 		@git checkout --detach temp-phpstanpr
 		@echo "" > phpstan/phpstan-baseline.neon
 		@echo "" > phpstan/phpstan-baseline-pr.neon
@@ -154,9 +154,7 @@ checkcomposer: loadenv
 
 updatecomposer:
 		@docker cp ./composer.json $(shell docker compose ps -q web):/code/composer.json
-		@docker compose exec web php composer.phar selfupdate
-		@docker cp $(shell docker compose ps -q web):/code/composer.phar ./composer.phar
-		@docker compose exec web php composer.phar update -W
+		@docker compose exec web composer update -W
 		@docker cp $(shell docker compose ps -q web):/code/composer.lock ./composer.lock
 
 updatedocker:

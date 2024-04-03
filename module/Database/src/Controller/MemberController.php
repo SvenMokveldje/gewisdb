@@ -9,7 +9,9 @@ use Checker\Service\Checker as CheckerService;
 use Checker\Service\Renewal as RenewalService;
 use Database\Model\Member as MemberModel;
 use Database\Service\Member as MemberService;
+use Database\Service\Stripe as StripeService;
 use DateTime;
+use Laminas\Http\Header\HeaderInterface;
 use Laminas\Http\Response;
 use Laminas\Mvc\Controller\AbstractActionController;
 use Laminas\Mvc\I18n\Translator;
@@ -18,6 +20,7 @@ use Laminas\View\Model\JsonModel;
 use Laminas\View\Model\ViewModel;
 
 use function array_map;
+use function sprintf;
 
 /**
  * @method FlashMessenger flashMessenger()
@@ -28,6 +31,7 @@ class MemberController extends AbstractActionController
         private readonly Translator $translator,
         private readonly CheckerService $checkerService,
         private readonly MemberService $memberService,
+        private readonly StripeService $stripeService,
         private readonly RenewalService $renewalService,
     ) {
     }
@@ -43,23 +47,112 @@ class MemberController extends AbstractActionController
     /**
      * Subscribe action.
      */
-    public function subscribeAction(): ViewModel
+    public function subscribeAction(): Response|ViewModel
     {
         $request = $this->getRequest();
 
-        // if ($request->isPost()) {
-        //     $member = $this->memberService->subscribe($request->getPost()->toArray());
-        //
-        //     if (null !== $member) {
-        //         $this->memberService->sendMemberSubscriptionEmail($member);
-        //
-        //        return new ViewModel(['member' => $member]);
-        //     }
-        // }
+        if ($request->isPost()) {
+            $prospectiveMember = $this->memberService->subscribe($request->getPost()->toArray());
+
+            if (null !== $prospectiveMember) {
+                // Always send the enrolment e-mail to ensure that the prospective member has a payment link that can be
+                // used in the event the checkout did not succeed.
+                $this->memberService->sendRegistrationUpdateEmail(
+                    $prospectiveMember,
+                    'registration',
+                );
+
+                // Create Stripe checkout session.
+                $checkoutLink = $this->stripeService->getCheckoutLink($prospectiveMember);
+
+                if (null === $checkoutLink) {
+                    // We have failed to generate a payment link, however, as we have already persisted the prospective
+                    // member we still want to show them something useful. They should have already received the e-mail
+                    // containing the generic payment link, which they can use to (re)start the checkout flow.
+
+                    return $this->redirect()->toRoute('member/subscribe/checkout/status', ['status' => 'error']);
+                }
+
+                $view = new ViewModel([
+                    'destination' => $this->translator->translate('our payment provider'),
+                    'url' => $checkoutLink,
+                ]);
+                $view->setTemplate('redirect');
+
+                return $view;
+            }
+        }
 
         return new ViewModel([
             'form' => $this->memberService->getMemberForm(),
         ]);
+    }
+
+    public function checkoutStatusAction(): ViewModel
+    {
+        $status = $this->params()->fromRoute('status');
+        $checkoutSessionId = (string) $this->params()->fromQuery('stripe_session_id');
+        $prospectiveMemberId = $this->stripeService->getLidnrFromCheckoutSession($checkoutSessionId);
+
+        if (null !== $prospectiveMemberId) {
+            $prospectiveMember = $this->memberService->getProspectiveMember($prospectiveMemberId)['member'];
+        } else {
+            $prospectiveMember = null;
+        }
+
+        // We assume that an empty array means an error state (`$status` will be "error" but not compared).
+        $results = ['prospectiveMember' => $prospectiveMember];
+        if ('cancelled' === $status) {
+            $results['cancelled'] = true;
+        } elseif ('completed' === $status) {
+            $results['completed'] = true;
+        }
+
+        return new ViewModel($results);
+    }
+
+    public function checkoutRestartAction(): Response|ViewModel
+    {
+        $token = (string) $this->params()->fromRoute('token');
+        $paymentLink = $this->stripeService->getPaymentLink($token);
+
+        if (
+            null === $paymentLink
+            || $paymentLink->isUsed()
+        ) {
+            return new ViewModel(['error' => false]);
+        }
+
+        $restartedCheckoutLink = $this->stripeService->restartCheckoutLink($paymentLink->getProspectiveMember());
+
+        if (null === $restartedCheckoutLink) {
+            return new ViewModel(['error' => true]);
+        }
+
+        return $this->redirect()
+            ->toUrl($restartedCheckoutLink)
+            ->setStatusCode(Response::STATUS_CODE_303);
+    }
+
+    public function paymentWebhookAction(): Response
+    {
+        $signature = $this->getRequest()->getHeader('Stripe-Signature');
+
+        if ($signature instanceof HeaderInterface) {
+            $event = $this->stripeService->verifyEvent($this->getRequest()->getContent(), $signature->getFieldValue());
+
+            if (null !== $event) {
+                // Stripe technically wants the 200 before we handle things, however, Laminas has as far as I know no
+                // (good) support for using Fibers to do this concurrently.
+                $this->stripeService->handleEvent($event);
+
+                return $this->getResponse()
+                    ->setStatusCode(Response::STATUS_CODE_200);
+            }
+        }
+
+        return $this->getResponse()
+            ->setStatusCode(Response::STATUS_CODE_400);
     }
 
     /**
@@ -69,6 +162,7 @@ class MemberController extends AbstractActionController
     public function renewAction(): ViewModel
     {
         $form = $this->memberService->getRenewalForm((string) $this->params()->fromRoute('token'));
+
         if (null === $form) {
             return new ViewModel([]);
         }
@@ -96,9 +190,9 @@ class MemberController extends AbstractActionController
                 $updatedMember = $form->getData();
                 $updatedMember->setChangedOn(new DateTime());
                 $this->memberService->getMemberMapper()->persist($updatedMember);
-                $form->getActionLink()->used();
-                $this->memberService->getActionLinkMapper()->persist($form->getActionLink());
-                $this->renewalService->sendRenewalSuccessEmail($form->getActionLink());
+                $form->getRenewalLink()->setUsed(true);
+                $this->memberService->getActionLinkMapper()->persist($form->getRenewalLink());
+                $this->renewalService->sendRenewalSuccessEmail($form->getRenewalLink());
 
                 return new ViewModel([
                     'updatedMember' => $updatedMember,
@@ -145,7 +239,7 @@ class MemberController extends AbstractActionController
      *
      * Shows member information.
      */
-    public function showAction(): ViewModel
+    public function showAction(): Response|ViewModel
     {
         $lidnr = (int) $this->params()->fromRoute('id');
         $member = $this->memberService->getMemberWithDecisions($lidnr);
@@ -165,9 +259,30 @@ class MemberController extends AbstractActionController
             return $this->memberIsDeleted($member);
         }
 
+        $noteForm = $this->memberService->getAuditNoteForm($member);
+        if ($this->getRequest()->isPost() && 'new-auditentry' === $this->getRequest()->getPost('submit', '')) {
+            $noteForm->setData($this->getRequest()->getPost()->toArray());
+
+            if ($noteForm->isValid()) {
+                $this->memberService->addAuditNote($member, $noteForm);
+                $this->flashMessenger()->addSuccessMessage(
+                    sprintf(
+                        $this->translator->translate('%s has been added to %s'),
+                        $this->translator->translate('Note'),
+                        $this->translator->translate('member'),
+                    ),
+                );
+
+                return $this->redirect()->toRoute('member/show', [
+                    'id' => $lidnr,
+                ]);
+            }
+        }
+
         return new ViewModel([
             'member' => $member,
             'hasCorrectInstallations' => $hasCorrectInstallations,
+            'noteForm' => $noteForm,
         ]);
     }
 
@@ -222,12 +337,22 @@ class MemberController extends AbstractActionController
             );
 
             if (null !== $updatedMember) {
-                $this->flashMessenger()->addSuccessMessage('Wijzigingen zijn opgeslagen!');
+                $this->flashMessenger()->addSuccessMessage(
+                    sprintf(
+                        $this->translator->translate('Change(s) of %s have been saved!'),
+                        $this->translator->translate('member'),
+                    ),
+                );
 
                 return $this->redirect()->toRoute('member/show', ['id' => $updatedMember->getLidnr()]);
             }
 
-            $this->flashMessenger()->addSuccessMessage('Wijzigingen kunnen niet worden opgeslagen.');
+            $this->flashMessenger()->addErrorMessage(
+                sprintf(
+                    $this->translator->translate('Could not save change(s) of %s!'),
+                    $this->translator->translate('member'),
+                ),
+            );
         }
 
         return new ViewModel($this->memberService->getMemberEditForm($member));
@@ -253,7 +378,12 @@ class MemberController extends AbstractActionController
         if ($this->getRequest()->isPost()) {
             $this->memberService->remove($member);
 
-            $this->flashMessenger()->addSuccessMessage('Het lid is succesvol verwijderd.');
+            $this->flashMessenger()->addSuccessMessage(
+                sprintf(
+                    $this->translator->translate('Succesfully deleted %s!'),
+                    $this->translator->translate('member'),
+                ),
+            );
 
             return $this->redirect()->toRoute('member');
         }
@@ -289,12 +419,22 @@ class MemberController extends AbstractActionController
             );
 
             if (null !== $member) {
-                $this->flashMessenger()->addSuccessMessage('Aanmeldingen mailinglijsten zijn opgeslagen!');
+                $this->flashMessenger()->addSuccessMessage(
+                    sprintf(
+                        $this->translator->translate('Change(s) of %s have been saved!'),
+                        $this->translator->translate('mailing list subscriptions'),
+                    ),
+                );
 
                 return $this->redirect()->toRoute('member/show', ['id' => $member->getLidnr()]);
             }
 
-            $this->flashMessenger()->addSuccessMessage('Aanmeldingen mailinglijsten kunnen niet worden opgeslagen.');
+            $this->flashMessenger()->addErrorMessage(
+                sprintf(
+                    $this->translator->translate('Could not save change(s) of %s!'),
+                    $this->translator->translate('mailing list subscriptions'),
+                ),
+            );
         }
 
         return new ViewModel($this->memberService->getListForm($member));
@@ -324,12 +464,30 @@ class MemberController extends AbstractActionController
             );
 
             if (null !== $member) {
-                $this->flashMessenger()->addSuccessMessage('Wijziging lidmaatschapstype is opgeslagen!');
+                $renewalLinks = $this->memberService->getActionLinkMapper()
+                    ->findRenewalByMember($member->getLidnr());
+
+                foreach ($renewalLinks as $renewalLink) {
+                    $renewalLink->setUsed(true);
+                    $this->memberService->getActionLinkMapper()->persist($renewalLink);
+                }
+
+                $this->flashMessenger()->addSuccessMessage(
+                    sprintf(
+                        $this->translator->translate('Change(s) of %s have been saved!'),
+                        $this->translator->translate('membership type'),
+                    ),
+                );
 
                 return $this->redirect()->toRoute('member/show', ['id' => $member->getLidnr()]);
             }
 
-            $this->flashMessenger()->addSuccessMessage('Wijziging lidmaatschapstype kan niet worden opgeslagen.');
+            $this->flashMessenger()->addErrorMessage(
+                sprintf(
+                    $this->translator->translate('Could not save change(s) of %s!'),
+                    $this->translator->translate('membership type'),
+                ),
+            );
         }
 
         return new ViewModel([
@@ -362,12 +520,22 @@ class MemberController extends AbstractActionController
             );
 
             if (null !== $member) {
-                $this->flashMessenger()->addSuccessMessage('Nieuwe verloopdatum lidmaatschap is opgeslagen!');
+                $this->flashMessenger()->addSuccessMessage(
+                    sprintf(
+                        $this->translator->translate('Change(s) of %s have been saved!'),
+                        $this->translator->translate('membership expiration date'),
+                    ),
+                );
 
                 return $this->redirect()->toRoute('member/show', ['id' => $member->getLidnr()]);
             }
 
-            $this->flashMessenger()->addSuccessMessage('Nieuwe verloopdatum lidmaatschap kan niet worden opgeslagen.');
+            $this->flashMessenger()->addErrorMessage(
+                sprintf(
+                    $this->translator->translate('Could not save change(s) of %s!'),
+                    $this->translator->translate('membership expiration date'),
+                ),
+            );
         }
 
         return new ViewModel([
@@ -407,12 +575,22 @@ class MemberController extends AbstractActionController
             );
 
             if (null !== $address) {
-                $this->flashMessenger()->addSuccessMessage('Wijzigingen adres zijn opgeslagen!');
+                $this->flashMessenger()->addSuccessMessage(
+                    sprintf(
+                        $this->translator->translate('Change(s) of %s have been saved!'),
+                        $this->translator->translate('member address'),
+                    ),
+                );
 
                 return $this->redirect()->toRoute('member/show', ['id' => $address->getMember()->getLidnr()]);
             }
 
-            $this->flashMessenger()->addSuccessMessage('Wijzigingen adress kunnen niet worden opgeslagen.');
+            $this->flashMessenger()->addErrorMessage(
+                sprintf(
+                    $this->translator->translate('Could not save change(s) of %s!'),
+                    $this->translator->translate('member address'),
+                ),
+            );
         }
 
         $form = $this->memberService->getAddressForm($member, $type);
@@ -454,12 +632,23 @@ class MemberController extends AbstractActionController
             );
 
             if (null !== $address) {
-                $this->flashMessenger()->addSuccessMessage('Nieuw adres is opgeslagen!');
+                $this->flashMessenger()->addSuccessMessage(
+                    sprintf(
+                        $this->translator->translate('%s has been added to %s'),
+                        $this->translator->translate('Address'),
+                        $this->translator->translate('member'),
+                    ),
+                );
 
                 return $this->redirect()->toRoute('member/show', ['id' => $address->getMember()->getLidnr()]);
             }
 
-            $this->flashMessenger()->addSuccessMessage('Nieuw address kan niet worden opgeslagen.');
+            $this->flashMessenger()->addErrorMessage(
+                sprintf(
+                    $this->translator->translate('Could not add new %s!'),
+                    $this->translator->translate('member address'),
+                ),
+            );
         }
 
         $form = $this->memberService->getAddressForm($member, $type, true);
@@ -505,12 +694,22 @@ class MemberController extends AbstractActionController
             );
 
             if (null !== $updatedMember) {
-                $this->flashMessenger()->addSuccessMessage('Adres is succesvol verwijderd!');
+                $this->flashMessenger()->addSuccessMessage(
+                    sprintf(
+                        $this->translator->translate('Succesfully deleted %s!'),
+                        $this->translator->translate('member address'),
+                    ),
+                );
 
                 return $this->redirect()->toRoute('member/show', ['id' => $updatedMember->getLidnr()]);
             }
 
-            $this->flashMessenger()->addSuccessMessage('Address kan niet worden verwijderd.');
+            $this->flashMessenger()->addErrorMessage(
+                sprintf(
+                    $this->translator->translate('Could not delete %s!'),
+                    $this->translator->translate('member address'),
+                ),
+            );
         }
 
         return new ViewModel([
@@ -609,14 +808,20 @@ class MemberController extends AbstractActionController
 
             if (null !== $member) {
                 $this->flashMessenger()->addSuccessMessage(
-                    $this->translator->translate('The changes have been applied!'),
+                    sprintf(
+                        $this->translator->translate('Change(s) of %s have been approved and saved!'),
+                        $this->translator->translate('member'),
+                    ),
                 );
 
                 return $this->redirect()->toRoute('member/updates');
             }
 
             $this->flashMessenger()->addErrorMessage(
-                $this->translator->translate('An error occurred while trying to save the changes.'),
+                sprintf(
+                    $this->translator->translate('Could not save change(s) of %s!'),
+                    $this->translator->translate('member'),
+                ),
             );
         }
 
@@ -649,14 +854,20 @@ class MemberController extends AbstractActionController
 
             if (null !== $result) {
                 $this->flashMessenger()->addInfoMessage(
-                    $this->translator->translate('The changes have not been applied.'),
+                    sprintf(
+                        $this->translator->translate('Change(s) of %s have been rejected!'),
+                        $this->translator->translate('member'),
+                    ),
                 );
 
                 return $this->redirect()->toRoute('member/updates');
             }
 
-            $this->flashMessenger()->addInfoMessage(
-                $this->translator->translate('An error occurred while trying to reject the changes.'),
+            $this->flashMessenger()->addErrorMessage(
+                sprintf(
+                    $this->translator->translate('Could not reject change(s) of %s!'),
+                    $this->translator->translate('member'),
+                ),
             );
         }
 

@@ -1,10 +1,10 @@
 name: PHP Coding Standards
 
-# Only run this action when pushing to master or on pull requests (creation, synchronisation, and reopening).
+# Only run this action when pushing to main or on pull requests (creation, synchronisation, and reopening).
 on:
     push:
         branches:
-            - master
+            - main
     pull_request:
 
 # Cancel running jobs that have become stale through updates to the ref (e.g., pushes to a pull request).
@@ -14,6 +14,6 @@ concurrency:
 
 jobs:
     php-codesniffer:
-        uses: 'GEWIS/gewisphp-coding-standards/.github/workflows/coding-standards.yml@1.0.0'
+        uses: 'GEWIS/gewisphp-coding-standards/.github/workflows/coding-standards.yml@1.1.0'
         with:
-            php-version: '8.2'
+            php-version: '8.3'

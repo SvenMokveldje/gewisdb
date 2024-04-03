@@ -24,7 +24,6 @@ use function array_map;
 use function array_reduce;
 use function array_values;
 use function in_array;
-use function preg_replace;
 
 /**
  * Member model.
@@ -140,15 +139,6 @@ class Member
      */
     #[Column(type: 'integer')]
     protected int $paid = 0;
-
-    /**
-     * Iban number.
-     */
-    #[Column(
-        type: 'string',
-        nullable: true,
-    )]
-    protected ?string $iban = null;
 
     /**
      * If the member receives a 'supremum'.
@@ -502,30 +492,6 @@ class Member
     }
 
     /**
-     * Get the IBAN.
-     */
-    public function getIban(bool $print = false): ?string
-    {
-        if (null === $this->iban) {
-            return null;
-        }
-
-        if ($print) {
-            return preg_replace('/(\\w{4})/', '$1 ', $this->iban);
-        }
-
-        return $this->iban;
-    }
-
-    /**
-     * Set the IBAN.
-     */
-    public function setIban(?string $iban): void
-    {
-        $this->iban = $iban;
-    }
-
-    /**
      * Get if the member wants a supremum.
      */
     public function getSupremum(): ?string
@@ -588,6 +554,37 @@ class Member
     }
 
     /**
+     * Member is at least 16 years old on the given date.
+     */
+    public function hasReached16(DateTime $onDate = new DateTime()): bool
+    {
+        return $this->isOlderThan($onDate, 16);
+    }
+
+    /**
+     * Member is at least 18 years old on the given date.
+     */
+    public function hasReached18(DateTime $onDate = new DateTime()): bool
+    {
+        return $this->isOlderThan($onDate, 18);
+    }
+
+    /**
+     * Member is at least 21 years old on the given date.
+     */
+    public function hasReached21(DateTime $onDate = new DateTime()): bool
+    {
+        return $this->isOlderThan($onDate, 21);
+    }
+
+    private function isOlderThan(
+        DateTime $onDate,
+        int $years,
+    ): bool {
+        return $onDate->diff($this->getBirth())->y >= $years;
+    }
+
+    /**
      * Get if the member is deleted.
      */
     public function getDeleted(): bool
@@ -617,6 +614,10 @@ class Member
      *     generation: int,
      *     hidden: bool,
      *     deleted: bool,
+     *     birthdate: string,
+     *     is_16_plus: bool,
+     *     is_18_plus: bool,
+     *     is_21_plus: bool,
      *     membershipEndsOn: ?string,
      *     expiration: string,
      *     authenticationKey: ?string,
@@ -635,6 +636,10 @@ class Member
             'generation' => $this->getGeneration(),
             'hidden' => $this->getHidden(),
             'deleted' => $this->getDeleted(),
+            'birthdate' => $this->getBirth()->format(DateTimeInterface::ATOM),
+            'is_16_plus' => $this->hasReached16(),
+            'is_18_plus' => $this->hasReached18(),
+            'is_21_plus' => $this->hasReached21(),
             'membershipEndsOn' => $this->getMembershipEndsOn()?->format(DateTimeInterface::ATOM) ?? null,
             'expiration' => $this->getExpiration()->format(DateTimeInterface::ATOM),
             'authenticationKey' => $this->getAuthenticationKey(),
@@ -649,15 +654,19 @@ class Member
      *
      * @return array{
      *     lidnr: int,
-     *     email: ?string,
-     *     fullName: string,
-     *     lastName: string,
-     *     middleName: string,
+     *     email?: ?string,
+     *     full_name: string,
+     *     family_name: string,
+     *     middle_name: string,
      *     initials: string,
-     *     firstName: string,
+     *     given_name: string,
      *     generation: int,
      *     hidden: bool,
      *     deleted: bool,
+     *     birthdate?: string,
+     *     is_16_plus?: bool,
+     *     is_18_plus?: bool,
+     *     is_21_plus?: bool,
      *     expiration: string,
      *     organs?: array<array-key, array{
      *         organ: array{
@@ -670,18 +679,18 @@ class Member
      *         current: bool,
      *      }>,
      *      keyholder?: bool,
+     *      membership_type?: string,
      * }
      */
     public function toArrayApi(array $include = []): array
     {
         $result = [
             'lidnr' => $this->getLidnr(),
-            'email' => $this->getEmail(),
-            'fullName' => $this->getFullName(),
-            'lastName' => $this->getLastName(),
-            'middleName' => $this->getMiddleName(),
+            'full_name' => $this->getFullName(),
+            'family_name' => $this->getLastName(),
+            'middle_name' => $this->getMiddleName(),
             'initials' => $this->getInitials(),
-            'firstName' => $this->getFirstName(),
+            'given_name' => $this->getFirstName(),
             'generation' => $this->getGeneration(),
             'hidden' => $this->getHidden(),
             'deleted' => $this->getDeleted(),
@@ -704,8 +713,32 @@ class Member
             );
         }
 
+        if (in_array('email', $include)) {
+            $result['email'] = $this->getEmail();
+        }
+
+        if (in_array('birthdate', $include)) {
+            $result['birthdate'] = $this->getBirth()->format(DateTimeInterface::ATOM);
+        }
+
+        if (in_array('is_16_plus', $include)) {
+            $result['is_16_plus'] = $this->hasReached16();
+        }
+
+        if (in_array('is_18_plus', $include)) {
+            $result['is_18_plus'] = $this->hasReached18();
+        }
+
+        if (in_array('is_21_plus', $include)) {
+            $result['is_21_plus'] = $this->hasReached21();
+        }
+
         if (in_array('keyholder', $include)) {
             $result['keyholder'] = $this->isKeyholder();
+        }
+
+        if (in_array('type', $include)) {
+            $result['membership_type'] = $this->getType()->value;
         }
 
         return $result;
